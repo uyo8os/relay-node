@@ -126,7 +126,7 @@ TMP_BINARY="${BINARY}.tmp"
 resolve_node_version() {
     # $1 = proxy arg ("" or "--proxy X"). Returns the bare version on stdout.
     local proxy_args="$1"
-    local api_url="https://api.github.com/repos/${REPO}/releases?per_page=30"
+    local api_url="https://api.github.com/repos/${REPO}/releases/latest"
     local raw
     # Query the releases list, find the highest v* tag, strip "v".
     # jq is not assumed; use grep+sed+sort. Tolerate a missing jq / API hiccup.
