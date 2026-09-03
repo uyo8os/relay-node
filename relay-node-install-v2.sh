@@ -126,14 +126,14 @@ TMP_BINARY="${BINARY}.tmp"
 resolve_node_version() {
     # $1 = proxy arg ("" or "--proxy X"). Returns the bare version on stdout.
     local proxy_args="$1"
-    local api_url="https://api.github.com/repos/${REPO}/releases/latest"
+    local api_url="https://api.github.com/repos/${REPO}/releases?per_page=30"
     local raw
     # Query the releases list, find the highest v* tag, strip "v".
     # jq is not assumed; use grep+sed+sort. Tolerate a missing jq / API hiccup.
     raw=$(curl -fsSL --connect-timeout 10 --max-time 20 $proxy_args \
           -H 'User-Agent: relay-node-install' "$api_url" 2>/dev/null \
-        | grep -oE '"tag_name": "v[0-9]+\.[0-9]+\.[0-9]+"' \
-        | sed -E 's/"tag_name": "v//; s/"$//' \
+        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+"' \
+        | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v//; s/"$//' \
         | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
         | sort -rV \
         | head -n1 || true)
