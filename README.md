@@ -28,3 +28,19 @@ curl -fsSL https://raw.githubusercontent.com/uyo8os/relay-node/main/relay-node-u
 ```
 curl -fsSL https://raw.githubusercontent.com/uyo8os/relay-node/main/relay-node-update-v2.sh -o /tmp/relay-node-update-v2.sh && bash /tmp/relay-node-update-v2.sh
 ```
+
+### 卸载
+
+```
+systemctl stop relay-node
+systemctl disable relay-node.service
+rm /etc/systemd/system/relay-node.service
+rm -rf /opt/relay-node
+systemctl daemon-reload
+```
+
+### 一键卸载
+
+```
+bash <(curl -sL https://raw.githubusercontent.com/uyo8os/relay-node/main/relay-node-uninstall-v2.sh)
+```
