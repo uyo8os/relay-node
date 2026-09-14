@@ -17,14 +17,14 @@
 
 ### 仅检查是否有新版本，不下载、不重启
 ```
-curl -L https://gitlab.com/uyo8os/relay-node/main/relay-node-update-v2.sh -o ecs.sh && chmod +x relay-node-update-v2.sh && bash relay-node-update-v2.sh --check
+curl -L https://raw.githubusercontent.com/uyo8os/relay-node/main/relay-node-update-v2.sh -o ecs.sh && chmod +x relay-node-update-v2.sh && bash relay-node-update-v2.sh --check
 ```
 ### 更新到指定版本
 ```
-curl -L https://gitlab.com/uyo8os/relay-node/main/relay-node-update-v2.sh -o ecs.sh && chmod +x relay-node-update-v2.sh && bash relay-node-update-v2.sh --version 1.2.3
+curl -L https://raw.githubusercontent.com/uyo8os/relay-node/main/relay-node-update-v2.sh && chmod +x relay-node-update-v2.sh && bash relay-node-update-v2.sh --version 1.2.3
 ```
 
 ### 自动检查并更新到最新版本
 ```
-curl -L https://gitlab.com/uyo8os/relay-node/main/relay-node-update-v2.sh -o ecs.sh && chmod +x relay-node-update-v2.sh && bash relay-node-update-v2.sh
+curl -L https://raw.githubusercontent.com/uyo8os/relay-node/main/relay-node-update-v2.sh && chmod +x relay-node-update-v2.sh && bash relay-node-update-v2.sh
 ```
