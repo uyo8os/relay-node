@@ -9,7 +9,7 @@
 # Options:
 #   -t, --token         Node token (required)
 #   -u, --url           Panel URL (required)
-#   -s, --service-name  systemd service name (default: relay-node)
+#   -s, --service-name  Instance/systemd name (default: relay-node; prompts on collision)
 #   -p, --proxy         Download proxy
 #   --version           Node version, X.Y.Z or vX.Y.Z
 #
@@ -35,6 +35,7 @@ fail() { echo -e "${RED}[FAIL]${NC}  $*"; exit 1; }
 NODE_TOKEN=""
 PANEL_URL=""
 SERVICE_NAME="relay-node"
+SERVICE_NAME_EXPLICIT=0
 PROXY="${RELAY_PROXY:-}"
 TARGET_VERSION=""
 
@@ -42,7 +43,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -t|--token)         NODE_TOKEN="$2"; shift 2 ;;
         -u|--url)           PANEL_URL="$2"; shift 2 ;;
-        -s|--service-name)  SERVICE_NAME="$2"; shift 2 ;;
+        -s|--service-name)  SERVICE_NAME="$2"; SERVICE_NAME_EXPLICIT=1; shift 2 ;;
         -p|--proxy)         PROXY="$2"; shift 2 ;;
         --version)          TARGET_VERSION="$2"; shift 2 ;;
         -h|--help)
@@ -51,7 +52,9 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -t, --token             Node token from the panel UI (required)"
             echo "  -u, --url               Panel URL (required)"
-            echo "  -s, --service-name      systemd service name (default: relay-node)"
+            echo "  -s, --service-name      Instance/systemd name (default: relay-node)"
+            echo "                          If the default exists, interactively asks for a new name"
+            echo "                          Use -s relay-node to explicitly update the first instance"
             echo "  -p, --proxy             Download proxy"
             echo "  --version X.Y.Z|vX.Y.Z  Specific node version (default: latest v* from GitHub)"
             echo ""
@@ -71,6 +74,59 @@ done
 
 [ "$(uname -s)" = "Linux" ] || fail "This installer only runs on Linux. Current OS: $(uname -s)"
 [ "$(id -u)" -eq 0 ] || fail "Please run as root (use sudo)."
+
+validate_service_name() {
+    local name="$1"
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}$ ]]
+}
+
+instance_exists() {
+    local name="$1"
+    [ -e "/opt/${name}" ] \
+        || [ -e "/etc/systemd/system/${name}.service" ] \
+        || systemctl cat "${name}.service" >/dev/null 2>&1
+}
+
+read_instance_name() {
+    local prompt="$1"
+    if [ -t 0 ]; then
+        read -r -p "$prompt" REPLY || return 1
+    elif [ -r /dev/tty ]; then
+        read -r -p "$prompt" REPLY </dev/tty || return 1
+    else
+        return 1
+    fi
+    printf '%s\n' "$REPLY"
+}
+
+validate_service_name "$SERVICE_NAME" \
+    || fail "Invalid service name '${SERVICE_NAME}'. Use 1-64 letters, digits, '.', '_', '@', or '-', starting with a letter or digit."
+
+# A bare/default invocation means "install a new node". Never silently replace
+# an existing default instance: ask for a separate instance name and derive all
+# of its paths from that name. An explicit -s keeps the old upgrade/reconfigure
+# behavior for the named instance.
+if [ "$SERVICE_NAME_EXPLICIT" = "0" ] && instance_exists "$SERVICE_NAME"; then
+    warn "relay-node is already installed at /opt/relay-node or relay-node.service exists."
+    while true; do
+        if ! NEW_SERVICE_NAME="$(read_instance_name "请输入第二个运行名称（例如 relay-node2）: ")"; then
+            fail "An existing relay-node installation was detected, but no interactive terminal is available. Re-run with -s <new-name>, for example: -s relay-node2"
+        fi
+        if ! validate_service_name "$NEW_SERVICE_NAME"; then
+            warn "Invalid name. Use 1-64 letters, digits, '.', '_', '@', or '-', starting with a letter or digit."
+            continue
+        fi
+        if instance_exists "$NEW_SERVICE_NAME"; then
+            warn "Instance '${NEW_SERVICE_NAME}' already exists. Please enter another name."
+            continue
+        fi
+        SERVICE_NAME="$NEW_SERVICE_NAME"
+        info "Installing an independent relay-node instance named '${SERVICE_NAME}'."
+        break
+    done
+elif [ "$SERVICE_NAME_EXPLICIT" = "1" ] && instance_exists "$SERVICE_NAME"; then
+    info "Existing instance '${SERVICE_NAME}' selected explicitly; it will be updated in place."
+fi
 
 ARCH_RAW="$(uname -m)"
 case "$ARCH_RAW" in
@@ -186,19 +242,20 @@ START_SH="${INSTALL_DIR}/start.sh"
 cat > "$START_SH" <<'STARTEOF'
 #!/usr/bin/env bash
 set -euo pipefail
-cd "/opt/relay-node"
+cd "__INSTALL_DIR__"
 export PANEL_URL="__PANEL_URL__"
 export NODE_TOKEN="__NODE_TOKEN__"
 export POLL_INTERVAL="${POLL_INTERVAL:-10}"
 export RUST_LOG="${RUST_LOG:-info}"
-if [ -f "/opt/relay-node/relay-node.env" ]; then
+if [ -f "__INSTALL_DIR__/relay-node.env" ]; then
     set -a
-    . "/opt/relay-node/relay-node.env"
+    . "__INSTALL_DIR__/relay-node.env"
     set +a
 fi
 exec ./relay-node
 STARTEOF
 
+sed -i "s|__INSTALL_DIR__|${INSTALL_DIR}|g" "$START_SH"
 sed -i "s|__PANEL_URL__|${PANEL_URL}|" "$START_SH"
 sed -i "s|__NODE_TOKEN__|${NODE_TOKEN}|" "$START_SH"
 chmod 700 "$START_SH"
@@ -219,16 +276,17 @@ if [ ! -f "$ENV_FILE" ]; then
 # OUTBOUND_BIND_IPV4=10.0.2.61
 # PUBLIC_IPV4_CHECK_URL=https://ipv4.icanhazip.com
 # PUBLIC_IPV6_CHECK_URL=https://ipv6.icanhazip.com
-# TLS_CERT_PATH=/opt/relay-node/certs/fullchain.pem
-# TLS_KEY_PATH=/opt/relay-node/certs/privkey.pem
+# TLS_CERT_PATH=__INSTALL_DIR__/certs/fullchain.pem
+# TLS_KEY_PATH=__INSTALL_DIR__/certs/privkey.pem
 ENVEOF
+    sed -i "s|__INSTALL_DIR__|${INSTALL_DIR}|g" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
 fi
 
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 cat > "$SERVICE_FILE" <<SVCEOF
 [Unit]
-Description=RelayNode forwarding service
+Description=RelayNode forwarding service (${SERVICE_NAME})
 After=network-online.target
 Wants=network-online.target
 
