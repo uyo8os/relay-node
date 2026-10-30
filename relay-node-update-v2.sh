@@ -11,7 +11,7 @@
 #
 # 选项：
 #   -p, --proxy <url>       下载代理；也可通过 RELAY_PROXY 设置。
-#   --version <X.Y.Z>       更新到指定版本；默认检测最新 v* Release。
+#   --version <version>     指定版本（可带 v 前缀和测试后缀）；默认包含测试版。
 #   --check                 仅检查当前和最新版本，不下载、不替换、不重启。
 #   -y, --yes               不询问确认，直接更新全部实例。
 #   -h, --help              显示帮助。
@@ -26,6 +26,7 @@ set -euo pipefail
 cd / 2>/dev/null || true
 
 REPO="uyo8os/relay-node"
+VERSION_PATTERN='[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?'
 PROXY="${RELAY_PROXY:-}"
 TARGET_VERSION=""
 CHECK_ONLY=0
@@ -45,7 +46,9 @@ warn() { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 fail() { echo -e "${RED}[FAIL]${NC}  $*" >&2; exit 1; }
 
 cleanup() {
-    [ -n "${TMP_BINARY:-}" ] && rm -f -- "$TMP_BINARY"
+    if [ -n "${TMP_BINARY:-}" ]; then
+        rm -f -- "$TMP_BINARY"
+    fi
 }
 trap cleanup EXIT
 
@@ -56,7 +59,8 @@ usage() {
 
 选项：
   -p, --proxy <url>       下载代理，例如 socks5://127.0.0.1:10808。
-  --version <X.Y.Z>       更新到指定版本；默认检测最新 v* Release。
+  --version <version>     指定版本，例如 v1.2.4-test-2026.10.30。
+                          默认检测最新 v* Release，包含测试版。
   --check                 仅检查，不下载、不替换、不重启。
   -y, --yes               不询问确认，直接更新全部实例。
   -h, --help              显示本帮助。
@@ -109,9 +113,25 @@ get_binary_version() {
         return 0
     fi
     "$binary" --version 2>/dev/null \
-        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
+        | grep -oE "$VERSION_PATTERN" \
         | head -n1 \
         || true
+}
+
+get_installed_version() {
+    local binary="$1" version release_version release_hash binary_hash
+    version="$(get_binary_version "$binary")"
+    # 测试版可能只报告 X.Y.Z；仅在文件哈希匹配时使用记录的完整 Release 标签。
+    if [ -n "$version" ] && [ -f "${binary}.release" ] \
+        && read -r release_version release_hash < "${binary}.release" \
+        && [[ "$release_version" =~ ^${VERSION_PATTERN}$ ]] \
+        && [ "$version" = "${release_version%%-*}" ]; then
+        binary_hash="$(sha256sum "$binary" | cut -d ' ' -f1)"
+        if [ "$binary_hash" = "$release_hash" ]; then
+            version="$release_version"
+        fi
+    fi
+    printf '%s\n' "$version"
 }
 
 discover_instances() {
@@ -125,7 +145,7 @@ discover_instances() {
         printf '%s\n' "$unit_text" | grep -Fqx "WorkingDirectory=${install_dir}" || continue
         printf '%s\n' "$unit_text" | grep -Fqx "ExecStart=/bin/bash ${install_dir}/start.sh" || continue
 
-        version="$(get_binary_version "${install_dir}/relay-node")"
+        version="$(get_installed_version "${install_dir}/relay-node")"
         INSTANCE_NAMES+=("$service_name")
         INSTANCE_DIRS+=("$install_dir")
         INSTALLED_VERSIONS+=("$version")
@@ -188,11 +208,11 @@ esac
 info "检测到架构：${ARCH} (${ARCH_RAW})"
 
 is_version() {
-    [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+    [[ "$1" =~ ^${VERSION_PATTERN}$ ]]
 }
 
 version_is_newer() {
-    # 参数 1 是候选版本，参数 2 是当前版本；调用方已保证均为 X.Y.Z。
+    # 按完整标签自然排序：1.2.4 < 1.2.4-test-2026.09.16 < 1.2.4-test-2026.10.30。
     [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
 }
 
@@ -211,21 +231,21 @@ resolve_latest_version() {
     releases="$(curl "${api_curl_args[@]}" -H 'User-Agent: relay-node-update-v2' "$api_url")" \
         || return 1
 
-    # 只接受 vX.Y.Z 标签，避免将非稳定标签作为自动更新目标。
+    # 保留测试后缀，否则同一基础版本的新测试构建会被错误地跳过。
     printf '%s\n' "$releases" \
-        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+"' \
+        | grep -oE "\"tag_name\"[[:space:]]*:[[:space:]]*\"v${VERSION_PATTERN}\"" \
         | sed -E 's/.*"v//; s/"$//' \
         | sort -rV \
-        | head -n1
+        | sed -n '1p'
 }
 
 if [ -z "$TARGET_VERSION" ]; then
-    info "正在查询最新稳定 v* Release…"
+    info "正在查询最新 v* Release（包含测试版）…"
     TARGET_VERSION="$(resolve_latest_version || true)"
     [ -n "$TARGET_VERSION" ] || fail "无法从 GitHub 查询最新 v* Release；请检查网络或代理后重试。"
 else
     is_version "$TARGET_VERSION" \
-        || fail "无效版本：${TARGET_VERSION}。仅接受 X.Y.Z，例如 1.2.3。"
+        || fail "无效版本：${TARGET_VERSION}。接受 X.Y.Z 或带测试后缀的版本，例如 v1.2.4-test-2026.10.30。"
 fi
 is_version "$TARGET_VERSION" \
     || fail "GitHub 返回了无效版本：${TARGET_VERSION}。"
@@ -282,9 +302,16 @@ FILE_SIZE="$(stat -c%s "$TMP_BINARY" 2>/dev/null || stat -f%z "$TMP_BINARY" 2>/d
     || fail "下载文件过小（${FILE_SIZE} 字节）；当前节点二进制未被修改。"
 
 chmod 755 "$TMP_BINARY"
-DOWNLOADED_VERSION="$("$TMP_BINARY" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
-[ "$DOWNLOADED_VERSION" = "$TARGET_VERSION" ] \
-    || fail "下载二进制版本为 ${DOWNLOADED_VERSION:-未知}，与目标版本 ${TARGET_VERSION} 不一致。"
+DOWNLOADED_VERSION="$(get_binary_version "$TMP_BINARY")"
+if [ "$DOWNLOADED_VERSION" != "$TARGET_VERSION" ]; then
+    if [ "$TARGET_VERSION" != "${TARGET_VERSION%%-*}" ] \
+        && [ "$DOWNLOADED_VERSION" = "${TARGET_VERSION%%-*}" ]; then
+        warn "二进制仅报告 ${DOWNLOADED_VERSION}，将单独记录 Release 标签 ${TARGET_VERSION}。"
+    else
+        fail "下载二进制版本为 ${DOWNLOADED_VERSION:-未知}，与目标版本 ${TARGET_VERSION} 不一致。"
+    fi
+fi
+BINARY_HASH="$(sha256sum "$TMP_BINARY" | cut -d ' ' -f1)"
 info "二进制验证通过：relay-node ${DOWNLOADED_VERSION}。"
 
 # 下载和校验全部完成后，才逐个短暂停止服务。每个实例先把新二进制复制到
@@ -331,6 +358,7 @@ for index in "${UPDATE_INDEXES[@]}"; do
         continue
     fi
     chmod 755 "$binary"
+    printf '%s %s\n' "$TARGET_VERSION" "$BINARY_HASH" > "${binary}.release"
 
     if [ "$was_active" -eq 1 ]; then
         info "启动 ${service_name}.service…"
